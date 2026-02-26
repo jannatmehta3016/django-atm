@@ -1,0 +1,6 @@
+{
+  "from_account_id": 1,
+  "to_account_id": 2,
+  "pin": "654321",
+  "amount": 300
+}
