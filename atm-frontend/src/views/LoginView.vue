@@ -69,7 +69,6 @@ export default {
         });
 
         const data = res.data;
-
         if (data.success) {
           // Save account details to localStorage
           localStorage.setItem("account_id", data.data.account_id);

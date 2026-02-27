@@ -9,8 +9,8 @@ from .models import Account, Transaction
 
 @admin.register(Account)
 class AccountAdmin(admin.ModelAdmin):
-    list_display = ("account_number", "holder_name", "balance", "account_type")
-    search_fields = ("account_number", "holder_name")
+    list_display = ("account_id", "holder_name", "balance", "account_type")
+    search_fields = ("account_id", "holder_name")
 
 
 @admin.register(Transaction)

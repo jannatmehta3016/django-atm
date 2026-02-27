@@ -9,7 +9,7 @@ def send_wrong_pin_email(account):
     subject = "ATM Alert: Wrong PIN Attempt"
     message = (
         f"Dear {account.holder_name},\n\n"
-        f"There was a wrong PIN attempt on your account {account.account_number}.\n"
+        f"There was a wrong PIN attempt on your account {account.account_id}.\n"
         f"Total failed attempts: {account.failed_attempts}\n"
         "If this was not you, please contact your bank immediately.\n\n"
         "Regards,\nSBI ATM"
