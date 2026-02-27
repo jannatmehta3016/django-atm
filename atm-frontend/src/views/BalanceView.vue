@@ -22,21 +22,24 @@ export default {
       message: "",
     };
   },
+
   methods: {
     async getBalance() {
       try {
-        // Call API
         const data = await balanceInquiry({
           account_id: this.accountId,
           pin: this.pin,
         });
 
-        // Display backend message
         this.message = data.message;
 
-        // If success, show balance
         if (data.success) {
           this.balance = data.data.balance;
+
+          // ✅ Auto logout after 2 seconds
+          setTimeout(() => {
+            this.$emit("logout");
+          }, 2000);
         }
       } catch (err) {
         console.error(err);

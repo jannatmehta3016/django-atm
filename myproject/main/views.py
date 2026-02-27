@@ -36,35 +36,49 @@ def is_account_blocked(account):
 #         return None
 def get_account_with_pin(account_id, pin):
     try:
-        account = Account.objects.get(id=account_id)
+        print("account_id",account_id)
+        # Ensure account_number is integer (important)
+        account = Account.objects.get(account_id=int(account_id))
+        print("account",account)
+       
+        # 🔒 Check if account is currently blocked
+        if account.is_blocked and account.blocked_until:
+            if timezone.now() < account.blocked_until:
+                return None
+            else:
+                # Auto-unblock after time expires
+                account.is_blocked = False
+                account.failed_attempts = 0
+                account.blocked_until = None
+                account.save()
 
-        # Check PIN
+        # 🔑 Check PIN
         if not account.verify_pin(pin):
-            # Increment failed attempts
             account.failed_attempts += 1
 
-            # Optional: block account after 3 failed attempts
+            # Block after 3 wrong attempts
             if account.failed_attempts >= 3:
                 account.is_blocked = True
-                account.blocked_until = timezone.now() + timedelta(minutes=15)  # 15 min block
+                account.blocked_until = timezone.now() + timedelta(minutes=5)
 
             account.save()
 
-            # Send email notification
+            # Optional email notification
             if account.email:
                 send_wrong_pin_email(account)
 
             return None
 
-        # Successful PIN resets failed attempts and unblocks
-        account.failed_attempts = 0
-        account.is_blocked = False
-        account.blocked_until = None
-        account.save()
+        # ✅ Correct PIN → reset attempts
+        if account.failed_attempts != 0 or account.is_blocked:
+            account.failed_attempts = 0
+            account.is_blocked = False
+            account.blocked_until = None
+            account.save()
 
         return account
 
-    except Account.DoesNotExist:
+    except (Account.DoesNotExist, ValueError, TypeError):
         return None
 
 def get_today_withdraw_total(account):
@@ -84,7 +98,7 @@ def get_today_deposit_total(account):
 def qr_login(request):
     file = request.FILES.get("qr")
     if not file:
-        return Response({"success": False, "message": "Invalid QR"}, status=400)
+        return Response({"success": False, "message": "File not found"}, status=404)
 
     try:
         img = Image.open(file)
@@ -93,18 +107,18 @@ def qr_login(request):
 
     decoded = decode(img)
     if not decoded:
-        return Response({"success": False, "message": "Invalid QR"}, status=400)
+        return Response({"success": False, "message": "QR code is invalid or unreadable"}, status=400)
 
     token = decoded[0].data.decode("utf-8")
     account = Account.objects.filter(qr_token=token).first()
     if not account:
-        return Response({"success": False, "message": "Invalid QR"}, status=400)
+         return Response({"success": False, "message": "Account not found for this QR"}, status=404)
 
     # Login successful
     return Response({
         "success": True,
         "message": "QR login successful",
-        "data": {"account_id": account.id, "holder_name": account.holder_name}
+        "data": {"account_id": account.account_id, "holder_name": account.holder_name}
     })
 
 # ---------------- Operation APIs (PIN per action) ----------------
@@ -114,6 +128,7 @@ def deposit(request):
     account_id = request.data.get('account_id')
     pin = request.data.get('pin')
     amount = request.data.get('amount')
+    print(pin)
 
     if not all([account_id, pin, amount]):
         return Response({"success": False, "message": "account_id, pin and amount are required"}, status=400)
@@ -237,8 +252,12 @@ def withdraw(request):
 def balance_inquiry(request):
     account_id = request.data.get('account_id')
     pin = request.data.get('pin')
-
+   
+    print(pin)
+   
     account = get_account_with_pin(account_id, pin)
+    print("account",account)
+  
     if not account:
         return Response({"success": False, "message": "Invalid PIN"}, status=403)
 
@@ -310,29 +329,51 @@ def fast_cash(request):
 @api_view(['POST'])
 def change_pin(request):
     account_id = request.data.get('account_id')
-    old_pin = request.data.get('old_pin')
     new_pin = request.data.get('new_pin')
+    confirm_pin = request.data.get('confirm_pin')
 
-    if not all([account_id, old_pin, new_pin]):
-        return Response({"success": False, "message": "All fields are required"}, status=400)
+    if not all([account_id, new_pin, confirm_pin]):
+        return Response(
+            {"success": False, "message": "All fields are required"},
+            status=400
+        )
 
-    account = get_account_with_pin(account_id, old_pin)
-    if not account:
-        return Response({"success": False, "message": "Invalid old PIN"}, status=403)
+    # Validate PIN format
+    if not new_pin.isdigit() or len(new_pin) != 4:
+        return Response(
+            {"success": False, "message": "PIN must be a 4-digit number"},
+            status=400
+        )
 
-    if is_account_blocked(account):
-        return Response({"success": False, "message": "Account temporarily blocked"}, status=403)
+    # Confirm PIN match
+    if new_pin != confirm_pin:
+        return Response(
+            {"success": False, "message": "PINs do not match"},
+            status=400
+        )
 
-    if not new_pin.isdigit() or len(new_pin) != 6:
-        return Response({"success": False, "message": "PIN must be a 6-digit number"}, status=400)
+    try:
+        account = Account.objects.get(account_id=account_id)
+    except Account.DoesNotExist:
+        return Response(
+            {"success": False, "message": "Account not found"},
+            status=404
+        )
 
-    if old_pin == new_pin:
-        return Response({"success": False, "message": "New PIN must be different from old PIN"}, status=400)
+    # Optional: Prevent same PIN reuse
+    if account.pin == new_pin:
+        return Response(
+            {"success": False, "message": "New PIN must be different from old PIN"},
+            status=400
+        )
 
-    account.set_pin(new_pin)
+    # Update PIN
+    account.set_pin(new_pin)  # make sure this method saves
 
-    # Session ends after action
-    return Response({"success": True, "message": "PIN changed successfully, session ended"})
+    return Response({
+        "success": True,
+        "message": "PIN changed successfully. Please login again."
+    })
 
 @api_view(['POST'])
 def transfer_money(request):
@@ -352,7 +393,7 @@ def transfer_money(request):
         return Response({"success": False, "message": "Account temporarily blocked"}, status=403)
 
     try:
-        to_account = Account.objects.get(id=to_account_id)
+        to_account = Account.objects.get(account_id=to_account_id)
     except Account.DoesNotExist:
         return Response({"success": False, "message": "Target account not found"}, status=404)
 

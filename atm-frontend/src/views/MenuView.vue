@@ -11,7 +11,12 @@
       <!-- PIN Input -->
       <div v-if="showPinInput" class="pin-verification">
         <p>Enter PIN for {{ selectedTransaction }}:</p>
-        <input type="password" v-model="pinAttempt" placeholder="Enter PIN" />
+        <input
+          type="password"
+          v-model="pinAttempt"
+          autocomplete="new-password"
+          placeholder="Enter PIN"
+        />
         <div class="pin-buttons">
           <button @click="verifyPin">Submit</button>
           <button @click="cancelPin">Cancel</button>

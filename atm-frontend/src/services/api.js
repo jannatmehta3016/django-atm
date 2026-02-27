@@ -79,10 +79,26 @@ export const miniStatement = async ({ account_id, pin }) => {
   }
 };
 // ----------------- Change PIN -----------------
-export const changePin = async ({ account_id, old_pin, new_pin }) => {
+// export const changePin = async ({ account_id, old_pin, new_pin }) => {
+//   try {
+//     const res = await api.post("change-pin/", { account_id, old_pin, new_pin });
+//     return res.data; // always return res.data
+//   } catch (err) {
+//     return {
+//       success: false,
+//       message: err.response?.data?.message || "Server error",
+//     };
+//   }
+// };
+export const changePin = async ({ account_id, new_pin, confirm_pin }) => {
   try {
-    const res = await api.post("change-pin/", { account_id, old_pin, new_pin });
-    return res.data; // always return res.data
+    const res = await api.post("change-pin/", {
+      account_id,
+      new_pin,
+      confirm_pin,
+    });
+
+    return res.data;
   } catch (err) {
     return {
       success: false,
