@@ -21,7 +21,7 @@ def is_account_blocked(account):
             return True
         else:
             account.is_blocked = False
-            account.failed_attempts = 0
+            # account.failed_attempts = 0
             account.save()
     return False
 
@@ -36,50 +36,70 @@ def is_account_blocked(account):
 #         return None
 def get_account_with_pin(account_id, pin):
     try:
-        print("account_id",account_id)
-        # Ensure account_number is integer (important)
         account = Account.objects.get(account_id=int(account_id))
-        print("account",account)
-       
-        # 🔒 Check if account is currently blocked
-        if account.is_blocked and account.blocked_until:
-            if timezone.now() < account.blocked_until:
-                return None
+
+        # 🔒 If already blocked
+        if account.is_blocked:
+            print("account.is_blocked", account.is_blocked)
+
+            if account.blocked_until and timezone.now() < account.blocked_until:
+                return "BLOCKED"
             else:
-                # Auto-unblock after time expires
+                # Auto-unblock
                 account.is_blocked = False
                 account.failed_attempts = 0
                 account.blocked_until = None
                 account.save()
 
-        # 🔑 Check PIN
+        # ❌ Wrong PIN
         if not account.verify_pin(pin):
+
             account.failed_attempts += 1
 
-            # Block after 3 wrong attempts
             if account.failed_attempts >= 3:
+
+                # 🔥 Increase block count
+                account.block_count += 1
+                print(account.block_count)
+                print(account.failed_attempts)
+                if account.block_count == 1:
+                     block_minutes =5
+                if account.block_count == 2:
+                     block_minutes =10
+                if account.block_count == 3:
+                    return "permanently blocked"
+
+                # if account.block_count>=3:
+                #     return "account permantely blocked , contact the bank"
+
+                # ⏳ Progressive block time
+                block_minutes =5
+             
+
                 account.is_blocked = True
-                account.blocked_until = timezone.now() + timedelta(minutes=5)
+                account.blocked_until = timezone.now() + timedelta(minutes=block_minutes)
+
+                # account.failed_attempts = 0  # reset attempts
+
+                account.save()
+                return "BLOCKED"
 
             account.save()
+            return None  # wrong pin but not blocked yet
 
-            # Optional email notification
-            if account.email:
-                send_wrong_pin_email(account)
+        # ✅ Correct PIN
+        account.failed_attempts = 0
+        account.is_blocked = False
+        account.blocked_until = None
+        account.block_count = 0  # reset block cycle (Option A)
 
-            return None
-
-        # ✅ Correct PIN → reset attempts
-        if account.failed_attempts != 0 or account.is_blocked:
-            account.failed_attempts = 0
-            account.is_blocked = False
-            account.blocked_until = None
-            account.save()
-
+        account.save()
         return account
 
-    except (Account.DoesNotExist, ValueError, TypeError):
+    except Account.DoesNotExist:
         return None
+
+
 
 def get_today_withdraw_total(account):
     today = timezone.now().date()
@@ -128,32 +148,60 @@ def deposit(request):
     account_id = request.data.get('account_id')
     pin = request.data.get('pin')
     amount = request.data.get('amount')
-    print(pin)
 
     if not all([account_id, pin, amount]):
-        return Response({"success": False, "message": "account_id, pin and amount are required"}, status=400)
+        return Response(
+            {"success": False, "message": "account_id, pin and amount are required"},
+            status=400
+        )
 
     account = get_account_with_pin(account_id, pin)
-    if not account:
-        return Response({"success": False, "message": "Invalid PIN"}, status=403)
 
-    if is_account_blocked(account):
-        return Response({"success": False, "message": "Account temporarily blocked"}, status=403)
+    # ❌ If account invalid or blocked
+    if not account:
+        acc = Account.objects.filter(account_id=account_id).first()
+
+        if acc and acc.is_blocked:
+            return Response(
+                {"success": False, "message": "Account temporarily blocked"},
+                status=403
+            )
+
+        return Response(
+            {"success": False, "message": "Invalid PIN"},
+            status=403
+        )
+
+    # ✅ Now continue normally (ONLY if account is valid)
 
     try:
         amount = Decimal(amount)
         if amount <= 0:
-            return Response({"success": False, "message": "Amount must be greater than 0"}, status=400)
+            return Response(
+                {"success": False, "message": "Amount must be greater than 0"},
+                status=400
+            )
     except:
-        return Response({"success": False, "message": "Invalid amount"}, status=400)
+        return Response(
+            {"success": False, "message": "Invalid amount"},
+            status=400
+        )
 
     if get_today_deposit_total(account) + amount > 50000:
-        return Response({"success": False, "message": "Daily deposit limit exceeded (50000)"}, status=400)
+        return Response(
+            {"success": False, "message": "Daily deposit limit exceeded (50000)"},
+            status=400
+        )
 
     account.deposit(amount)
-    Transaction.objects.create(account=account, transaction_type='DEPOSIT', amount=amount, remark='ATM Deposit')
 
-    # Session ends after action
+    Transaction.objects.create(
+        account=account,
+        transaction_type='DEPOSIT',
+        amount=amount,
+        remark='ATM Deposit'
+    )
+
     return Response({
         "success": True,
         "message": "Deposit successful, session ended",
@@ -248,27 +296,70 @@ def withdraw(request):
         "data": {"withdrawn": amount, "balance": account.balance}
     })
 
+# @api_view(['POST'])
+# def balance_inquiry(request):
+#     account_id = request.data.get('account_id')
+#     pin = request.data.get('pin')
+   
+#     print(pin)
+   
+#     account = get_account_with_pin(account_id, pin)
+#     print("account",account)
+  
+#     if not account:
+#         return Response({"success": False, "message": "Invalid PIN"}, status=403)
+
+#     if is_account_blocked(account):
+#         return Response({"success": False, "message": "Account temporarily blocked","blocking_status":account.is_blocked },status=403)
+
+    
+#     return Response({
+#         "success": True,
+#         "message": "Balance fetched successfully, session ended",
+#         "data": {"balance": account.balance, "holder_name": account.holder_name,"blocking_status":account.is_blocked}
+#     })
+
+
 @api_view(['POST'])
 def balance_inquiry(request):
     account_id = request.data.get('account_id')
     pin = request.data.get('pin')
-   
-    print(pin)
-   
+
     account = get_account_with_pin(account_id, pin)
-    print("account",account)
-  
+
+    # 🔒 If Blocked
+    if account == "BLOCKED":
+        acc = Account.objects.get(account_id=account_id)
+
+        remaining_seconds = int(
+            (acc.blocked_until - timezone.now()).total_seconds()
+        )
+
+        block_minutes = remaining_seconds // 60
+
+        return Response({
+            "success": False,
+            "is_blocked": True,
+            "remaining_seconds": remaining_seconds,
+            "block_minutes": block_minutes,
+            "message": "Account permanently blocked. Contact the bank."
+        }, status=403)
+
+    # ❌ Wrong PIN
     if not account:
-        return Response({"success": False, "message": "Invalid PIN"}, status=403)
+        return Response({
+            "success": False,
+            "is_blocked": False,
+            "message": "Invalid PIN"
+        }, status=403)
 
-    if is_account_blocked(account):
-        return Response({"success": False, "message": "Account temporarily blocked"}, status=403)
-
-    # Session ends after action
+    # ✅ Correct PIN
     return Response({
         "success": True,
-        "message": "Balance fetched successfully, session ended",
-        "data": {"balance": account.balance, "holder_name": account.holder_name}
+        "data": {
+            # "balance": account.balance,
+            
+        }
     })
 
 @api_view(['POST'])

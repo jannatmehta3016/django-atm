@@ -16,6 +16,7 @@ class Account(models.Model):
     qr_token = models.CharField(max_length=100, unique=True, null=True, blank=True)
     account_type = models.CharField(max_length=10, choices=ACCOUNT_TYPE_CHOICES)
     failed_attempts = models.IntegerField(default=0)
+    block_count = models.IntegerField(default=0)
     is_blocked = models.BooleanField(default=False)
     blocked_until = models.DateTimeField(null=True, blank=True)
     email = models.EmailField(max_length=254, null=True, blank=True)
