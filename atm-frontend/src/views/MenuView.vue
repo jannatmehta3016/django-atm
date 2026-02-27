@@ -1,5 +1,14 @@
 <template>
-  <div class="atm-wrapper">
+  <!-- 🔒 BLOCKED SCREEN -->
+  <div v-if="is_blocked" class="blocked-screen">
+    <div class="lock-icon">🔒</div>
+    <h2>Account Blocked for {{ block_minutes }}</h2>
+    <p>Try again in {{ formatTime(remainingSeconds) }}</p>
+    <button @click="logout">Exit</button>
+  </div>
+
+  <!-- NORMAL ATM SCREEN -->
+  <div v-else class="atm-wrapper">
     <div class="atm-screen">
       <!-- Header -->
       <div class="atm-header">
@@ -83,6 +92,9 @@ export default {
       selectedTransaction: null,
       currentTransaction: null,
       verifiedPin: null,
+      is_blocked: false,
+      remainingSeconds: 0,
+      timer: null,
     };
   },
   mounted() {
@@ -96,6 +108,7 @@ export default {
       this.pinAttempt = "";
       this.pinError = "";
     },
+
     async verifyPin() {
       if (!this.pinAttempt) {
         this.pinError = "Enter PIN";
@@ -108,7 +121,7 @@ export default {
           pin: this.pinAttempt,
         });
 
-        const data = res.data; // <-- Axios response data
+        const data = res.data;
 
         if (data.success) {
           this.verifiedPin = this.pinAttempt;
@@ -123,24 +136,63 @@ export default {
             ChangePIN,
             TransferMoney,
           };
+
           this.currentTransaction = componentMap[this.selectedTransaction];
         } else {
+          if (data.is_blocked) {
+            this.handleBlocked(data);
+            return;
+          }
+
           this.pinError = data.message || "Invalid PIN";
         }
       } catch (err) {
-        console.error(err); // For debugging
-        this.pinError =
-          err.response?.data?.message || "Server error. Try again.";
+        const data = err.response?.data;
+
+        if (data?.is_blocked) {
+          this.handleBlocked(data);
+          return;
+        }
+
+        this.pinError = data?.message || "Server error. Try again.";
       }
     },
+
+    handleBlocked(data) {
+      this.is_blocked = true;
+      this.showPinInput = false;
+      this.remainingSeconds = data.remaining_seconds;
+      this.startCountdown();
+    },
+
+    startCountdown() {
+      if (this.timer) clearInterval(this.timer);
+
+      this.timer = setInterval(() => {
+        if (this.remainingSeconds > 0) {
+          this.remainingSeconds--;
+        } else {
+          clearInterval(this.timer);
+          this.is_blocked = false; // Auto unlock UI
+        }
+      }, 1000);
+    },
+
+    formatTime(seconds) {
+      const minutes = Math.floor(seconds / 60);
+      const secs = seconds % 60;
+      return `${minutes}:${secs < 10 ? "0" : ""}${secs}`;
+    },
+
     cancelPin() {
       this.showPinInput = false;
       this.pinAttempt = "";
       this.pinError = "";
     },
+
     logout() {
       localStorage.clear();
-      window.location.href = "/"; // redirect to login page
+      window.location.href = "/";
     },
   },
 };
@@ -154,6 +206,7 @@ export default {
   align-items: center;
   background: linear-gradient(to bottom, #0f3c94, #1b5fd1);
 }
+
 .atm-screen {
   width: 900px;
   height: 500px;
@@ -163,26 +216,31 @@ export default {
   display: flex;
   flex-direction: column;
 }
+
 .atm-header {
   text-align: center;
   padding: 20px;
 }
+
 .logo {
   width: 80px;
   margin-bottom: 10px;
 }
+
 .atm-body {
   flex: 1;
   display: flex;
   justify-content: space-between;
   padding: 0 80px;
 }
+
 .left-buttons,
 .right-buttons {
   display: flex;
   flex-direction: column;
   gap: 25px;
 }
+
 button {
   width: 220px;
   padding: 14px;
@@ -193,6 +251,7 @@ button {
   font-weight: bold;
   cursor: pointer;
 }
+
 .pin-verification {
   margin: 20px auto;
   text-align: center;
@@ -200,14 +259,32 @@ button {
   padding: 15px;
   border-radius: 10px;
 }
+
 .pin-verification input {
   padding: 10px;
   margin-right: 10px;
   border-radius: 5px;
   border: 1px solid #ccc;
 }
+
 .pin-verification .error {
   color: red;
   margin-top: 5px;
+}
+
+.blocked-screen {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  background: linear-gradient(to bottom, #0f3c94, #1b5fd1);
+  color: red;
+  font-size: 24px;
+}
+
+.lock-icon {
+  font-size: 100px;
+  margin-bottom: 20px;
 }
 </style>
