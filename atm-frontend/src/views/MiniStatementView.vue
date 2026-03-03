@@ -38,7 +38,7 @@ export default {
           this.transactions = data.data.transactions;
           setTimeout(() => {
             this.$emit("logout");
-          }, 2000);
+          }, 30000);
         }
       } catch (err) {
         console.error(err);

@@ -1,7 +1,7 @@
 import axios from "axios";
 
 const api = axios.create({
-  baseURL: "http://127.0.0.1:8000/api/",
+  baseURL: "/api/",
 });
 
 // ----------------- QR Login -----------------
@@ -40,6 +40,21 @@ export const withdraw = async ({ account_id, pin, amount }) => {
     return {
       success: false,
       message: err.response?.data?.message || "Server error",
+    };
+  }
+};
+// ----------------- Verify Withdraw OTP -----------------
+export const verifyWithdrawOtp = async ({ transaction_id, otp }) => {
+  try {
+    const res = await api.post("withdraw/verify-otp/", {
+      transaction_id,
+      otp,
+    });
+    return res.data;
+  } catch (err) {
+    return {
+      success: false,
+      message: err.response?.data?.message || "OTP verification failed",
     };
   }
 };

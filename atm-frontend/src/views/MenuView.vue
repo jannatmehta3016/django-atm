@@ -6,6 +6,13 @@
     <p>Try again in {{ formatTime(remainingSeconds) }}</p>
     <button @click="logout">Exit</button>
   </div>
+  <!-- 🚫 PERMANENT BLOCK SCREEN -->
+  <div v-else-if="is_permanent_block" class="permanent-block-screen">
+    <div class="lock-icon">🚫</div>
+    <h2>Account Permanently Blocked</h2>
+    <p>Please contact your bank.</p>
+    <button @click="logout">Exit</button>
+  </div>
 
   <!-- NORMAL ATM SCREEN -->
   <div v-else class="atm-wrapper">
@@ -93,6 +100,7 @@ export default {
       currentTransaction: null,
       verifiedPin: null,
       is_blocked: false,
+      is_permanent_block: false,
       remainingSeconds: 0,
       timer: null,
     };
@@ -100,7 +108,16 @@ export default {
   mounted() {
     this.holderName = localStorage.getItem("holder_name");
     this.accountId = localStorage.getItem("account_id");
+    console.log("Mounted accountId:", this.accountId);
+    if (!this.accountId) {
+      console.log("No account ID found. Redirecting to login...");
+      window.location.href = "/";
+      return;
+    }
   },
+
+  // console.log("Mounted accountId:", this.accountId);
+
   methods: {
     openPin(transaction) {
       this.selectedTransaction = transaction;
@@ -114,6 +131,7 @@ export default {
         this.pinError = "Enter PIN";
         return;
       }
+      console.log("Account ID:", this.accountId);
 
       try {
         const res = await api.post("balance/", {
@@ -139,6 +157,12 @@ export default {
 
           this.currentTransaction = componentMap[this.selectedTransaction];
         } else {
+          if (data.is_permanent_block) {
+            this.is_permanent_block = true;
+            this.showPinInput = false;
+            return;
+          }
+
           if (data.is_blocked) {
             this.handleBlocked(data);
             return;
@@ -149,6 +173,11 @@ export default {
       } catch (err) {
         const data = err.response?.data;
 
+        if (data?.is_permanent_block) {
+          this.is_permanent_block = true;
+          this.showPinInput = false;
+          return;
+        }
         if (data?.is_blocked) {
           this.handleBlocked(data);
           return;
@@ -284,6 +313,21 @@ button {
 }
 
 .lock-icon {
+  font-size: 100px;
+  margin-bottom: 20px;
+}
+.permanent-block-screen {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  background: black;
+  color: red;
+  font-size: 26px;
+}
+
+.permanent-block-screen .lock-icon {
   font-size: 100px;
   margin-bottom: 20px;
 }

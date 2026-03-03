@@ -1,5 +1,19 @@
 <template>
-  <div class="atm-wrapper">
+  <!-- 🔒 TEMP BLOCK -->
+  <div v-if="is_blocked" class="blocked-screen">
+    <h2>Account Temporarily Blocked</h2>
+    <p>Try again in {{ formatTime(remainingSeconds) }}</p>
+  </div>
+
+  <!-- 🚫 PERMANENT BLOCK -->
+  <div v-else-if="is_permanent_block" class="permanent-block-screen">
+    <h2>Account Permanently Blocked</h2>
+    <p>Please contact your bank.</p>
+  </div>
+
+  <!-- NORMAL LOGIN -->
+  <div v-else class="atm-wrapper">
+    <!-- <div class="atm-wrapper"> -->
     <div class="atm-screen">
       <!-- Header -->
       <div class="atm-header">
@@ -32,6 +46,10 @@ export default {
       file: null,
       error: "",
       loading: false,
+      is_blocked: false,
+      is_permanent_block: false,
+      remainingSeconds: 0,
+      timer: null,
     };
   },
 
@@ -48,6 +66,24 @@ export default {
 
       this.file = selected;
       this.error = "";
+    },
+    startCountdown() {
+      if (this.timer) clearInterval(this.timer);
+
+      this.timer = setInterval(() => {
+        if (this.remainingSeconds > 0) {
+          this.remainingSeconds--;
+        } else {
+          clearInterval(this.timer);
+          this.is_blocked = false;
+        }
+      }, 1000);
+    },
+
+    formatTime(seconds) {
+      const minutes = Math.floor(seconds / 60);
+      const secs = seconds % 60;
+      return `${minutes}:${secs < 10 ? "0" : ""}${secs}`;
     },
 
     async uploadQR() {
@@ -69,19 +105,29 @@ export default {
         });
 
         const data = res.data;
+        localStorage.getItem("account_id");
+
+        if (data.is_permanent_block) {
+          this.is_permanent_block = true;
+          return;
+        }
+
+        if (data.is_blocked) {
+          this.is_blocked = true;
+          this.remainingSeconds = data.remaining_seconds;
+          this.startCountdown();
+          return;
+        }
+
         if (data.success) {
-          // Save account details to localStorage
           localStorage.setItem("account_id", data.data.account_id);
           localStorage.setItem("holder_name", data.data.holder_name);
 
-          this.$emit("login-success"); // Proceed to ATM main screen
-        } else {
-          // Show backend error message (Invalid QR, QR not recognized, etc.)
-          this.error = data.message || "Invalid QR";
+          this.$emit("login-success");
+          return;
         }
-      } catch (err) {
-        // Handles backend 400/500 errors
-        this.error = err.response?.data?.message || "Invalid QR";
+
+        this.error = data.message || "Invalid QR";
       } finally {
         this.loading = false;
       }
@@ -146,5 +192,35 @@ button:disabled {
   margin-top: 10px;
   color: red;
   text-align: center;
+}
+.blocked-screen {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  background: linear-gradient(to bottom, #0f3c94, #1b5fd1);
+  color: red;
+  font-size: 24px;
+}
+
+.lock-icon {
+  font-size: 100px;
+  margin-bottom: 20px;
+}
+.permanent-block-screen {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  background: black;
+  color: red;
+  font-size: 26px;
+}
+
+.permanent-block-screen .lock-icon {
+  font-size: 100px;
+  margin-bottom: 20px;
 }
 </style>

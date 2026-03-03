@@ -7,7 +7,13 @@
       v-model="toAccountId"
       placeholder="Enter Target Account ID"
     />
-    <input type="number" v-model="amount" placeholder="Enter Amount" />
+    <input
+      type="number"
+      v-model="amount"
+      @focus="clearZero"
+      @blur="resetIfEmpty"
+      placeholder="Enter Amount"
+    />
 
     <button @click="submitTransfer">Transfer</button>
 
@@ -28,6 +34,16 @@ export default {
     };
   },
   methods: {
+    clearZero() {
+      if (this.amount === 0) {
+        this.amount = "";
+      }
+    },
+    resetIfEmpty() {
+      if (this.amount === "") {
+        this.amount = 0;
+      }
+    },
     async submitTransfer() {
       if (!this.toAccountId || this.amount <= 0) {
         this.message = "Enter valid account and amount";

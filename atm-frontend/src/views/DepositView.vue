@@ -1,7 +1,13 @@
 <template>
   <div class="transaction-view">
     <h2>Deposit</h2>
-    <input type="number" v-model="amount" placeholder="Enter Amount" />
+    <input
+      type="number"
+      v-model="amount"
+      @focus="clearZero"
+      @blur="resetIfEmpty"
+      placeholder="Enter Amount"
+    />
     <button @click="submitDeposit">Deposit</button>
     <p v-if="message">{{ message }}</p>
   </div>
@@ -18,7 +24,19 @@ export default {
       message: "",
     };
   },
+
   methods: {
+    clearZero() {
+      if (this.amount === 0) {
+        this.amount = "";
+      }
+    },
+    resetIfEmpty() {
+      if (this.amount === "") {
+        this.amount = 0;
+      }
+    },
+
     async submitDeposit() {
       if (this.amount <= 0) {
         this.message = "Enter valid amount";

@@ -34,7 +34,7 @@ export default {
         this.message = data.message;
 
         if (data.success) {
-          this.balance = data.data.balance;
+          this.balance = data.balance;
 
           // ✅ Auto logout after 2 seconds
           setTimeout(() => {

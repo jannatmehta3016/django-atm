@@ -4,16 +4,149 @@ from django.views.decorators.csrf import csrf_exempt
 from django.utils import timezone
 from datetime import timedelta
 from decimal import Decimal
+from django.db import transaction as db_transaction
+from rest_framework.decorators import api_view
 from pyzbar.pyzbar import decode
 from PIL import Image
-from .utils import send_wrong_pin_email 
+# from .utils import send_wrong_pin_email 
+from .utils import send_sms
 from ai_engine.fraud_detector import check_transaction
+from .models import Transaction, OtpChallenge
+from .utils import generate_otp, hash_otp, otp_expiry
 
 from .models import Account, Transaction
+from decimal import Decimal
+
+OTP_THRESHOLD = Decimal("10000")
 
 FAST_CASH_AMOUNTS = [100, 200, 500, 1000, 2000, 5000]
 
 # ---------------- Helper Functions ----------------
+
+
+
+@api_view(['POST'])
+def verify_withdraw_otp(request):
+    transaction_id = request.data.get("transaction_id")
+    otp = str(request.data.get("otp") or "").strip()
+
+    # 1️⃣ Basic validation
+    if not transaction_id or not otp:
+        return Response({
+            "success": False,
+            "message": "transaction_id and otp are required"
+        }, status=400)
+
+    # 2️⃣ Fetch transaction
+    txn = Transaction.objects.select_related("account").filter(id=transaction_id).first()
+    if not txn:
+        return Response({
+            "success": False,
+            "message": "Transaction not found"
+        }, status=404)
+
+    # 3️⃣ Ensure transaction is waiting for OTP
+    if txn.status != Transaction.STATUS_PENDING_OTP:
+        return Response({
+            "success": False,
+            "message": f"Transaction not pending OTP (status={txn.status})"
+        }, status=400)
+
+    # 4️⃣ Fetch OTP challenge
+    challenge = getattr(txn, "otp_challenge", None)
+    if not challenge:
+        return Response({
+            "success": False,
+            "message": "OTP challenge not found"
+        }, status=400)
+
+    # 5️⃣ Check OTP state
+    if challenge.is_used:
+        return Response({
+            "success": False,
+            "message": "OTP already used"
+        }, status=400)
+
+    if challenge.is_expired():
+        txn.status = Transaction.STATUS_CANCELLED
+        txn.save(update_fields=["status"])
+        return Response({
+            "success": False,
+            "message": "OTP expired. Transaction cancelled."
+        }, status=400)
+
+    if challenge.attempts >= challenge.max_attempts:
+        txn.status = Transaction.STATUS_CANCELLED
+        txn.save(update_fields=["status"])
+        return Response({
+            "success": False,
+            "message": "Maximum OTP attempts exceeded. Transaction cancelled."
+        }, status=403)
+
+    # 6️⃣ Verify OTP
+    from .utils import verify_otp
+
+    if not verify_otp(otp, challenge.otp_hash):
+        challenge.attempts += 1
+        challenge.save(update_fields=["attempts"])
+
+        remaining = challenge.max_attempts - challenge.attempts
+
+        if remaining <= 0:
+            txn.status = Transaction.STATUS_CANCELLED
+            txn.save(update_fields=["status"])
+            return Response({
+                "success": False,
+                "message": "Incorrect OTP. Transaction cancelled."
+            }, status=403)
+
+        return Response({
+            "success": False,
+            "message": f"Invalid OTP. Attempts remaining: {remaining}"
+        }, status=403)
+
+    # 🟢 7️⃣ OTP CORRECT — FINALIZE WITHDRAWAL (ATOMIC)
+    with db_transaction.atomic():
+
+        # Lock account row
+        account = txn.account
+        account.refresh_from_db()
+
+        # Safety check
+        if account.balance < txn.amount:
+            txn.status = Transaction.STATUS_CANCELLED
+            txn.save(update_fields=["status"])
+            return Response({
+                "success": False,
+                "message": "Insufficient balance"
+            }, status=400)
+
+        # Deduct money
+        account.balance -= txn.amount
+        account.save(update_fields=["balance"])
+
+        # Mark OTP used
+        challenge.is_used = True
+        challenge.save(update_fields=["is_used"])
+
+        # Complete transaction
+        txn.status = Transaction.STATUS_COMPLETED
+        txn.save(update_fields=["status"])
+
+    # 8️⃣ Send success SMS
+    send_sms(
+        account.phone_number,
+        f"₹{txn.amount} withdrawn successfully.\nAvailable Balance: ₹{account.balance}"
+    )
+
+    return Response({
+        "success": True,
+        "message": "OTP verified. Withdrawal successful.",
+        "data": {
+            "withdrawn": txn.amount,
+            "balance": account.balance
+        }
+    })
 def is_account_blocked(account):
     """Check if account is blocked and auto-unblock if time passed."""
     if account.is_blocked:
@@ -40,12 +173,9 @@ def get_account_with_pin(account_id, pin):
 
         # 🔒 If already blocked
         if account.is_blocked:
-            print("account.is_blocked", account.is_blocked)
-
             if account.blocked_until and timezone.now() < account.blocked_until:
                 return "BLOCKED"
             else:
-                # Auto-unblock
                 account.is_blocked = False
                 account.failed_attempts = 0
                 account.blocked_until = None
@@ -57,61 +187,57 @@ def get_account_with_pin(account_id, pin):
             account.failed_attempts += 1
 
             if account.failed_attempts >= 3:
-
-                # 🔥 Increase block count
                 account.block_count += 1
-                print(account.block_count)
-                print(account.failed_attempts)
+
+                # 🚫 Permanent block
+                if account.block_count >= 3:
+                    account.is_permanent_block = True
+                    account.is_blocked = True
+
+                    account.failed_attempts = 0
+                    account.save()
+                    return "PERMANENT_BLOCK"
+
+                # ⏳ Temporary block
                 if account.block_count == 1:
-                     block_minutes =5
-                if account.block_count == 2:
-                     block_minutes =10
-                if account.block_count == 3:
-                    return "permanently blocked"
-
-                # if account.block_count>=3:
-                #     return "account permantely blocked , contact the bank"
-
-                # ⏳ Progressive block time
-                block_minutes =5
-             
+                    block_minutes = 5
+                elif account.block_count == 2:
+                    block_minutes = 10
 
                 account.is_blocked = True
                 account.blocked_until = timezone.now() + timedelta(minutes=block_minutes)
-
-                # account.failed_attempts = 0  # reset attempts
-
+                account.failed_attempts = 0
                 account.save()
+
                 return "BLOCKED"
 
             account.save()
-            return None  # wrong pin but not blocked yet
+            return None
 
         # ✅ Correct PIN
         account.failed_attempts = 0
+        account.block_count = 0
         account.is_blocked = False
         account.blocked_until = None
-        account.block_count = 0  # reset block cycle (Option A)
-
         account.save()
+
         return account
 
     except Account.DoesNotExist:
         return None
 
 
+# def get_today_withdraw_total(account):
+#     today = timezone.now().date()
+#     return sum(tx.amount for tx in Transaction.objects.filter(account=account, transaction_type="WITHDRAW", timestamp__date=today))
 
-def get_today_withdraw_total(account):
-    today = timezone.now().date()
-    return sum(tx.amount for tx in Transaction.objects.filter(account=account, transaction_type="WITHDRAW", timestamp__date=today))
+# def get_today_withdraw_count(account):
+#     today = timezone.now().date()
+#     return Transaction.objects.filter(account=account, transaction_type="WITHDRAW", timestamp__date=today).count()
 
-def get_today_withdraw_count(account):
-    today = timezone.now().date()
-    return Transaction.objects.filter(account=account, transaction_type="WITHDRAW", timestamp__date=today).count()
-
-def get_today_deposit_total(account):
-    today = timezone.now().date()
-    return sum(tx.amount for tx in Transaction.objects.filter(account=account, transaction_type="DEPOSIT", timestamp__date=today))
+# def get_today_deposit_total(account):
+#     today = timezone.now().date()
+#     return sum(tx.amount for tx in Transaction.objects.filter(account=account, transaction_type="DEPOSIT", timestamp__date=today))
 
 # ---------------- QR Login ----------------
 @api_view(['POST'])
@@ -133,6 +259,22 @@ def qr_login(request):
     account = Account.objects.filter(qr_token=token).first()
     if not account:
          return Response({"success": False, "message": "Account not found for this QR"}, status=404)
+    if account.is_permanent_block:
+        return Response({
+            "success": False,
+            "is_permanent_block": True
+        })
+    if account.is_blocked:
+        if account.blocked_until and timezone.now() < account.blocked_until:
+            remaining_seconds = int(
+                (account.blocked_until - timezone.now()).total_seconds()
+            )
+
+            return Response({
+                "success": False,
+                "is_blocked": True,
+                "remaining_seconds": remaining_seconds
+            })
 
     # Login successful
     return Response({
@@ -187,11 +329,11 @@ def deposit(request):
             status=400
         )
 
-    if get_today_deposit_total(account) + amount > 50000:
-        return Response(
-            {"success": False, "message": "Daily deposit limit exceeded (50000)"},
-            status=400
-        )
+    # if get_today_deposit_total(account) + amount > 50000:
+    #     return Response(
+    #         {"success": False, "message": "Daily deposit limit exceeded (50000)"},
+    #         status=400
+    #     )
 
     account.deposit(amount)
 
@@ -201,6 +343,9 @@ def deposit(request):
         amount=amount,
         remark='ATM Deposit'
     )
+    # send_sms(
+    # account.phone_number,
+    # f"₹{amount} deposited successfully.\nAvailable Balance: ₹{account.balance}")
 
     return Response({
         "success": True,
@@ -246,12 +391,17 @@ def deposit(request):
 #         "message": "Withdrawal successful, session ended",
 #         "data": {"withdrawn": amount, "balance": account.balance}
 #     })
+
+
+
+
 @api_view(['POST'])
 def withdraw(request):
     account_id = request.data.get('account_id')
     pin = request.data.get('pin')
     amount = request.data.get('amount')
 
+    # 1️⃣ Account + PIN validation
     account = get_account_with_pin(account_id, pin)
     if not account:
         return Response({"success": False, "message": "Invalid PIN"}, status=403)
@@ -259,43 +409,94 @@ def withdraw(request):
     if is_account_blocked(account):
         return Response({"success": False, "message": "Account temporarily blocked"}, status=403)
 
+    # 2️⃣ Amount validation
     try:
         amount = Decimal(amount)
     except:
         return Response({"success": False, "message": "Invalid amount"}, status=400)
 
-    if amount > 10000:
-        return Response({"success": False, "message": "Maximum withdrawal per transaction is 10000"}, status=400)
+    if amount <= 0:
+        return Response({"success": False, "message": "Amount must be greater than zero"}, status=400)
 
-    if get_today_withdraw_count(account) >= 10:
-        return Response({"success": False, "message": "Maximum 5 withdrawals per day allowed"}, status=400)
+    # 3️⃣ Limits (unchanged)
+    # if get_today_withdraw_count(account) >= 10:
+    #     return Response({"success": False, "message": "Maximum 5 withdrawals per day allowed"}, status=400)
 
-    if get_today_withdraw_total(account) + amount > 40000:
-        return Response({"success": False, "message": "Daily withdrawal limit reached (40000)"}, status=400)
+    # if get_today_withdraw_total(account) + amount > 40000:
+    #     return Response({"success": False, "message": "Daily withdrawal limit reached (40000)"}, status=400)
 
-    # 🧠 AI FRAUD DETECTOR
-    if check_transaction(account, amount):
+    # 4️⃣ AI fraud detection (unchanged)
+    # if check_transaction(account, amount):
+    #     return Response({
+    #         "success": False,
+    #         "message": "Suspicious activity detected. Transaction blocked."
+    #     }, status=403)
+
+    # 🔀 5️⃣ DECISION POINT (this is the core change)
+
+    # 🟢 SMALL AMOUNT → INSTANT WITHDRAW
+    if amount <= OTP_THRESHOLD:
+
+        if not account.withdraw(amount):
+            return Response({"success": False, "message": "Insufficient balance"}, status=400)
+
+        Transaction.objects.create(
+            account=account,
+            transaction_type='WITHDRAW',
+            amount=amount,
+            remark='ATM Withdraw',
+            status=Transaction.STATUS_COMPLETED
+        )
+
+        # send_sms(
+        #     account.phone_number,
+        #     f"₹{amount} withdrawn successfully.\nAvailable Balance: ₹{account.balance}"
+        # )
+
         return Response({
-            "success": False,
-            "message": "Suspicious activity detected. Transaction blocked."
-        }, status=403)
+            "success": True,
+            "otp_required": False,
+            "message": "Withdrawal successful",
+            "data": {
+                "withdrawn": amount,
+                "balance": account.balance
+            }
+        })
 
-    if not account.withdraw(amount):
-        return Response({"success": False, "message": "Insufficient balance"}, status=400)
+    # 🟠 LARGE AMOUNT → OTP REQUIRED (NO MONEY MOVES HERE)
 
-    Transaction.objects.create(
+    # 6️⃣ Create pending transaction
+    txn = Transaction.objects.create(
         account=account,
         transaction_type='WITHDRAW',
         amount=amount,
-        remark='ATM Withdraw'
+        remark='ATM Withdraw (OTP Required)',
+        status=Transaction.STATUS_PENDING_OTP
     )
 
+    # 7️⃣ Generate & store OTP
+    otp = generate_otp()
+
+    OtpChallenge.objects.create(
+        account=account,
+        transaction=txn,
+        otp_hash=hash_otp(otp),
+        expires_at=otp_expiry(minutes=1)
+    )
+
+    # 8️⃣ Send OTP SMS (NOT success SMS)
+    send_sms(
+        account.phone_number,
+        f"OTP for withdrawing ₹{amount} is {otp}. Valid for 1 minutes."
+    )
+
+    # 9️⃣ Respond to frontend
     return Response({
         "success": True,
-        "message": "Withdrawal successful, session ended",
-        "data": {"withdrawn": amount, "balance": account.balance}
+        "otp_required": True,
+        "transaction_id": txn.id,
+        "message": "OTP sent to registered mobile number"
     })
-
 # @api_view(['POST'])
 # def balance_inquiry(request):
 #     account_id = request.data.get('account_id')
@@ -326,40 +527,39 @@ def balance_inquiry(request):
     pin = request.data.get('pin')
 
     account = get_account_with_pin(account_id, pin)
+    print(account)
 
     # 🔒 If Blocked
+    if account == "PERMANENT_BLOCK":
+     return Response({
+        "success": False,
+        "is_permanent_block": True,
+        "message": "Account permanently blocked. Contact the bank."
+     }, status=403)
+     
     if account == "BLOCKED":
-        acc = Account.objects.get(account_id=account_id)
+       acc = Account.objects.get(account_id=account_id)
 
-        remaining_seconds = int(
-            (acc.blocked_until - timezone.now()).total_seconds()
-        )
+       remaining_seconds = int(
+        (acc.blocked_until - timezone.now()).total_seconds()
+       )
 
-        block_minutes = remaining_seconds // 60
-
-        return Response({
+       return Response({
             "success": False,
             "is_blocked": True,
             "remaining_seconds": remaining_seconds,
-            "block_minutes": block_minutes,
-            "message": "Account permanently blocked. Contact the bank."
+            "message": "Account temporarily blocked."
         }, status=403)
-
-    # ❌ Wrong PIN
+    
     if not account:
         return Response({
-            "success": False,
-            "is_blocked": False,
-            "message": "Invalid PIN"
-        }, status=403)
+        "success": False,
+        "message": "Invalid PIN"
+            }, status=403)
 
-    # ✅ Correct PIN
     return Response({
         "success": True,
-        "data": {
-            # "balance": account.balance,
-            
-        }
+        "balance": account.balance
     })
 
 @api_view(['POST'])
@@ -495,6 +695,10 @@ def transfer_money(request):
     to_account.balance += Decimal(amount)
     from_account.save()
     to_account.save()
+    # send_sms(
+    # from_account.phone_number,
+    # f"₹{amount} transferred.\nAvailable Balance: ₹{from_account.balance}"
+# )
 
     # Session ends after action
     return Response({"success": True, "message": "Transfer successful, session ended"})
